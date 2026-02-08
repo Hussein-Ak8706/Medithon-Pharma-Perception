@@ -1,7 +1,8 @@
 ## Medithon Pharma Perception Tool
 
 ##### The Pahram Perception Dashboard is a handy way for companies to compare the general sentiment of the public as well as the literature surveys.
-Boating over 4000 medicines as well as 30,000 publically available comments from the internet. Our Tool gives a accurate & actionable insights for companies to improve their products. We also have a comparison feature which lets you compare a drug with your competitor's to see where they are lacking & you can improve 
+Boasting over 4000 medicines as well as 30,000 publically available comments from the internet. Our Tool gives a accurate & actionable insights for companies to improve their products. We also have a comparison feature which lets you compare a drug with your competitor's to see where they are lacking & you can improve.
+All in all it is a wholesome package for the company to gain actionable insights from all sources available on the internet
 
 ### Sources:
 ##### https://www.askapatient.com
