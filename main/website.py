@@ -12,7 +12,7 @@ from collections import Counter
 # LOAD DATA
 # =========================
 
-df = pd.read_csv("rahul_final_enriched.csv")
+df = pd.read_csv("Datasets/rahul_final_enriched.csv")
 df.columns = [c.strip().replace(" ", "_").lower() for c in df.columns]
 
 # =========================
