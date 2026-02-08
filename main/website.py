@@ -19,9 +19,21 @@ df_agg.columns = [c.strip().replace(" ", "_").lower() for c in df_agg.columns]
 df_comments = pd.read_csv("Datasets/DrugCommentSorted.csv")
 df_comments.columns = [c.strip().replace(" ", "_").lower() for c in df_comments.columns]
 
+# Load review counts
+df_review_counts = pd.read_csv("Datasets/DrugReviewCount.csv")
+# The CSV header is misleading - first column is drug name, second is count
+# So we need to rename: first column (number_of_reviews) -> drug_name, second column (comment) -> number_of_reviews
+df_review_counts.columns = ['drug_name', 'number_of_reviews']
+# Convert drug_name to string to match the main dataframe
+df_review_counts['drug_name'] = df_review_counts['drug_name'].astype(str)
+
 # Merge
 df = df_agg.merge(df_comments[['drug_name', 'most_positive_comment', 'most_negative_comment']], 
                   on='drug_name', how='left')
+# Ensure drug_name is string type in main df before merging
+df['drug_name'] = df['drug_name'].astype(str)
+df = df.merge(df_review_counts[['drug_name', 'number_of_reviews']], 
+              on='drug_name', how='left')
 
 # =========================
 # DATA PROCESSING
@@ -69,6 +81,7 @@ df["primary_safety_concern"] = df["primary_safety_concern"].fillna("Not specifie
 df["literature_assessment"] = df.get("literature_assessment", pd.Series([""] * len(df))).fillna("")
 df["most_positive_comment"] = df["most_positive_comment"].fillna("No positive comment available")
 df["most_negative_comment"] = df["most_negative_comment"].fillna("No negative comment available")
+df["number_of_reviews"] = pd.to_numeric(df["number_of_reviews"], errors="coerce").fillna(0).astype(int)
 
 # =========================
 # RISK SCORING
@@ -885,6 +898,16 @@ def update_single_drug(drug):
             ])
         ]),
         
+        # Total Reviews Metric
+        html.Div(style={'marginTop': '20px', 'marginBottom': '30px'}, children=[
+            html.Div(className="metric-card", style={'textAlign': 'center', 'maxWidth': '400px', 'margin': '0 auto'}, children=[
+                html.Div("📊 Total Patient Reviews", className="metric-label"),
+                html.Div(f"{int(r['number_of_reviews'])}" if pd.notna(r['number_of_reviews']) else "0", 
+                        className="metric-value", 
+                        style={'fontSize': '3em', 'color': '#0066FF'})
+            ])
+        ]),
+        
         # Key Metrics
         html.Div(className="section-title", children=["", "Clinical Literature Metrics"]),
         html.Div(className="grid-4", children=[
@@ -1035,4 +1058,4 @@ def update_comparison(drug1, drug2):
     ])
 
 if __name__ == "__main__":
-    app.run(port=8056, debug=True)
+    app.run(port=8054, debug=True)
