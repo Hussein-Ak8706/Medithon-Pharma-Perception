@@ -1,4 +1,3 @@
-#external implementation with css
 import dash
 from dash import dcc, html, Input, Output
 import pandas as pd
@@ -12,11 +11,20 @@ from collections import Counter
 # LOAD DATA
 # =========================
 
-df = pd.read_csv("Datasets/AnalyticData.csv")
-df.columns = [c.strip().replace(" ", "_").lower() for c in df.columns]
+# Load aggregated data
+df_agg = pd.read_csv("Datasets/AnalyticData.csv")
+df_agg.columns = [c.strip().replace(" ", "_").lower() for c in df_agg.columns]
+
+# Load best/worst comments
+df_comments = pd.read_csv("Datasets/DrugCommentSorted.csv")
+df_comments.columns = [c.strip().replace(" ", "_").lower() for c in df_comments.columns]
+
+# Merge
+df = df_agg.merge(df_comments[['drug_name', 'most_positive_comment', 'most_negative_comment']], 
+                  on='drug_name', how='left')
 
 # =========================
-# CLEAN + DERIVED FEATURES
+# DATA PROCESSING
 # =========================
 
 numeric_cols = [
@@ -31,10 +39,8 @@ numeric_cols = [
 for c in numeric_cols:
     df[c] = pd.to_numeric(df[c], errors="coerce")
 
-# Consensus gap
-df["consensus_gap"] = (
-    df["positive_studies_(%)"] - df["negative_studies_(%)"]
-).abs()
+# Calculate consensus gap
+df["consensus_gap"] = (df["positive_studies_(%)"] - df["negative_studies_(%)"]).abs()
 
 def consensus_label(gap):
     if pd.isna(gap):
@@ -56,40 +62,19 @@ df["recent_pub_share"] = df.apply(
     axis=1
 )
 
-# Text fields safety
+# Fill NaN values
 df["overall_sentiment"] = df["overall_sentiment"].fillna("unknown")
 df["all_side_effects"] = df["all_side_effects"].fillna("")
 df["primary_safety_concern"] = df["primary_safety_concern"].fillna("Not specified")
-
-# =========================
-# PERCEPTION GAP ANALYSIS
-# =========================
-
-def calculate_perception_gap(row):
-    """Detect mismatch between patient rating and literature sentiment"""
-    rating = row["avg_rating"]
-    pos_studies = row["positive_studies_(%)"]
-    
-    if pd.isna(rating) or pd.isna(pos_studies):
-        return "Insufficient data"
-    
-    if rating > 4.0 and pos_studies < 40:
-        return "⚠️ Rating-Literature Gap: Patients rate highly despite mixed evidence"
-    elif rating < 3.0 and pos_studies > 60:
-        return "⚠️ Rating-Literature Gap: Poor ratings despite positive literature"
-    elif rating > 4.0 and pos_studies > 60:
-        return "✅ Aligned: Strong patient satisfaction backed by evidence"
-    else:
-        return "Neutral alignment"
-
-df["perception_gap"] = df.apply(calculate_perception_gap, axis=1)
+df["literature_assessment"] = df.get("literature_assessment", pd.Series([""] * len(df))).fillna("")
+df["most_positive_comment"] = df["most_positive_comment"].fillna("No positive comment available")
+df["most_negative_comment"] = df["most_negative_comment"].fillna("No negative comment available")
 
 # =========================
 # RISK SCORING
 # =========================
 
 def calculate_risk_score(row):
-    """Proprietary risk score based on multiple factors"""
     score = 0
     
     if row["negative_studies_(%)"] > 40:
@@ -109,25 +94,25 @@ def calculate_risk_score(row):
     elif pd.notna(row["avg_rating"]) and row["avg_rating"] < 3.5:
         score += 1
     
-    serious_keywords = ["heart attack", "death", "liver", "kidney", "stroke"]
+    # Sentiment-based risk
+    if row["overall_sentiment"] == "negative":
+        score += 2
+    
+    serious_keywords = ["heart attack", "death", "liver", "kidney", "stroke", "allergic"]
     if any(kw in str(row["primary_safety_concern"]).lower() for kw in serious_keywords):
         score += 2
     
     if score >= 7:
-        return "🔴 High Risk", score
+        return " High Risk", score
     elif score >= 4:
-        return "🟡 Moderate Risk", score
+        return " Moderate Risk", score
     else:
-        return "🟢 Low Risk", score
+        return " Low Risk", score
 
 df["risk_label"], df["risk_score"] = zip(*df.apply(calculate_risk_score, axis=1))
 
-# =========================
-# SIDE EFFECT ANALYSIS
-# =========================
-
+# Extract side effects
 def extract_side_effects(side_effects_str):
-    """Parse side effects from pipe-separated string"""
     if pd.isna(side_effects_str) or side_effects_str == "":
         return []
     return [e.strip().lower() for e in str(side_effects_str).split("|") if e.strip()]
@@ -139,7 +124,6 @@ df["side_effects_list"] = df["all_side_effects"].apply(extract_side_effects)
 # =========================
 
 def create_sentiment_gauge(rating):
-    """Create a gauge chart for patient rating"""
     if pd.isna(rating):
         rating = 0
     
@@ -147,59 +131,89 @@ def create_sentiment_gauge(rating):
         mode="gauge+number",
         value=rating,
         domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': "Patient Rating"},
+        title={'text': "Patient Rating", 'font': {'size': 20, 'family': 'Archivo', 'weight': 700}},
+        number={'font': {'size': 48, 'family': 'Space Mono', 'weight': 700}},
         gauge={
-            'axis': {'range': [None, 5]},
-            'bar': {'color': "darkblue"},
+            'axis': {'range': [None, 5], 'tickwidth': 2, 'tickcolor': "#1a1a1a"},
+            'bar': {'color': "#0066FF", 'thickness': 0.75},
+            'bgcolor': "white",
+            'borderwidth': 3,
+            'bordercolor': "#e0e0e0",
             'steps': [
-                {'range': [0, 2], 'color': "#ffcccc"},
-                {'range': [2, 3.5], 'color': "#ffffcc"},
-                {'range': [3.5, 5], 'color': "#ccffcc"}
+                {'range': [0, 2], 'color': "#FFE5ED"},
+                {'range': [2, 3.5], 'color': "#FFF5E5"},
+                {'range': [3.5, 5], 'color': "#E5F9E5"}
             ],
             'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
+                'line': {'color': "#FF3366", 'width': 4},
+                'thickness': 0.85,
                 'value': 4
             }
         }
     ))
     
-    fig.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=20, r=20, t=60, b=20),
+        paper_bgcolor='rgba(0,0,0,0)',
+        font={'family': 'Archivo'}
+    )
     return fig
 
 def create_side_effects_chart(side_effects_list):
-    """Create bar chart of side effects"""
     if not side_effects_list or len(side_effects_list) == 0:
         return go.Figure().add_annotation(
-            text="No side effects data",
+            text="No side effects data available",
             xref="paper", yref="paper",
-            x=0.5, y=0.5, showarrow=False
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="#999", family="Archivo")
         )
     
     effects_count = Counter(side_effects_list)
     top_effects = dict(effects_count.most_common(10))
+    
+    colors = ['#FF3366' if i % 2 == 0 else '#FF6B8A' for i in range(len(top_effects))]
     
     fig = go.Figure(data=[
         go.Bar(
             x=list(top_effects.values()),
             y=list(top_effects.keys()),
             orientation='h',
-            marker=dict(color='#FF6B6B')
+            marker=dict(
+                color=colors,
+                line=dict(color='#1a1a1a', width=2)
+            ),
+            text=list(top_effects.values()),
+            textposition='outside',
+            textfont=dict(size=14, family='Space Mono', weight=700)
         )
     ])
     
     fig.update_layout(
-        title="Top Reported Side Effects",
-        xaxis_title="Mentions",
-        yaxis_title="",
+        title=dict(
+            text="Top Reported Side Effects",
+            font=dict(size=20, family='Archivo', weight=700, color='#1a1a1a')
+        ),
+        xaxis=dict(
+            title="",
+            showgrid=True,
+            gridcolor='#f0f0f0',
+            zeroline=False
+        ),
+        yaxis=dict(
+            title="",
+            tickfont=dict(size=13, family='Archivo', weight=600)
+        ),
         height=400,
-        margin=dict(l=20, r=20, t=40, b=20)
+        margin=dict(l=20, r=80, t=60, b=40),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='white',
+        font={'family': 'Archivo'}
     )
     
     return fig
 
-def create_wordcloud(side_effects_list):
-    """Generate word cloud from side effects"""
+def create_wordcloud_from_effects(side_effects_list):
     if not side_effects_list or len(side_effects_list) == 0:
         return None
     
@@ -209,9 +223,12 @@ def create_wordcloud(side_effects_list):
         width=800,
         height=400,
         background_color='white',
-        colormap='Reds',
+        colormap='RdPu',
         relative_scaling=0.5,
-        min_font_size=10
+        min_font_size=12,
+        font_path=None,
+        contour_width=2,
+        contour_color='#1a1a1a'
     ).generate(text)
     
     img = BytesIO()
@@ -222,20 +239,17 @@ def create_wordcloud(side_effects_list):
     return f"data:image/png;base64,{encoded}"
 
 def create_comparison_chart(drug1_data, drug2_data, drug1_name, drug2_name):
-    """Create radar chart comparing two drugs"""
     categories = [
-        'Positive Studies',
-        'Evidence Quality',
-        'Patient Rating (×20)',
-        'Research Freshness (×100)',
-        'Safety (100-Neg%)'
+        'Positive<br>Studies',
+        'Evidence<br>Quality',
+        'Patient<br>Rating (×20)',
+        'Safety<br>(100-Neg%)'
     ]
     
     drug1_values = [
         drug1_data["positive_studies_(%)"],
         drug1_data["high_quality_evidence_(%)"],
         drug1_data["avg_rating"] * 20 if pd.notna(drug1_data["avg_rating"]) else 0,
-        drug1_data["recent_pub_share"] * 100,
         100 - drug1_data["negative_studies_(%)"]
     ]
     
@@ -243,7 +257,6 @@ def create_comparison_chart(drug1_data, drug2_data, drug1_name, drug2_name):
         drug2_data["positive_studies_(%)"],
         drug2_data["high_quality_evidence_(%)"],
         drug2_data["avg_rating"] * 20 if pd.notna(drug2_data["avg_rating"]) else 0,
-        drug2_data["recent_pub_share"] * 100,
         100 - drug2_data["negative_studies_(%)"]
     ]
     
@@ -253,66 +266,496 @@ def create_comparison_chart(drug1_data, drug2_data, drug1_name, drug2_name):
         r=drug1_values,
         theta=categories,
         fill='toself',
-        name=drug1_name
+        name=drug1_name,
+        line=dict(color='#0066FF', width=3),
+        fillcolor='rgba(0, 102, 255, 0.2)'
     ))
     
     fig.add_trace(go.Scatterpolar(
         r=drug2_values,
         theta=categories,
         fill='toself',
-        name=drug2_name
+        name=drug2_name,
+        line=dict(color='#FF3366', width=3),
+        fillcolor='rgba(255, 51, 102, 0.2)'
     ))
     
     fig.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                tickfont=dict(size=12, family='Space Mono', weight=700),
+                gridcolor='#e0e0e0'
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=14, family='Archivo', weight=700)
+            )
+        ),
         showlegend=True,
-        height=500
+        legend=dict(
+            font=dict(size=16, family='Archivo', weight=700),
+            orientation='h',
+            yanchor='bottom',
+            y=1.1,
+            xanchor='center',
+            x=0.5
+        ),
+        height=550,
+        paper_bgcolor='rgba(0,0,0,0)',
+        font={'family': 'Archivo'}
     )
     
     return fig
 
-# =========================
-# STRATEGIC INSIGHTS
-# =========================
-
 def generate_strategic_insights(drug_data):
-    """Generate insights using rule-based logic"""
     insights = []
+    
+    # Sentiment-based insight
+    if drug_data['overall_sentiment'] == 'negative':
+        insights.append(f" Overall sentiment is NEGATIVE - patient experience issues need immediate attention")
+    elif drug_data['overall_sentiment'] == 'positive':
+        insights.append(f" Overall sentiment is POSITIVE - leverage patient satisfaction in marketing")
     
     if pd.notna(drug_data['avg_rating']):
         if drug_data['avg_rating'] >= 4.0:
-            insights.append(f"✅ Strong patient satisfaction ({drug_data['avg_rating']:.1f}/5) - maintain current formulation and marketing approach")
+            insights.append(f" Strong patient satisfaction ({drug_data['avg_rating']:.1f}/5) - maintain current formulation")
         elif drug_data['avg_rating'] < 3.0:
-            insights.append(f"⚠️ Low patient satisfaction ({drug_data['avg_rating']:.1f}/5) - investigate common complaints and consider reformulation")
-        else:
-            insights.append(f"📊 Moderate patient satisfaction ({drug_data['avg_rating']:.1f}/5) - opportunity to improve user experience")
+            insights.append(f" Low patient satisfaction ({drug_data['avg_rating']:.1f}/5) - reformulation recommended")
     
     if drug_data['high_quality_evidence_(%)'] < 40:
-        insights.append(f"🔬 Evidence quality is low ({drug_data['high_quality_evidence_(%)']:.0f}%) - invest in rigorous clinical trials to strengthen market position")
+        insights.append(f" Evidence quality is low ({drug_data['high_quality_evidence_(%)']:.0f}%) - invest in rigorous clinical trials")
     elif drug_data['high_quality_evidence_(%)'] > 70:
-        insights.append(f"💎 Strong evidence base ({drug_data['high_quality_evidence_(%)']:.0f}%) - leverage in marketing to healthcare professionals")
+        insights.append(f" Strong evidence base ({drug_data['high_quality_evidence_(%)']:.0f}%) - leverage in professional marketing")
     
     if drug_data['negative_studies_(%)'] > 30:
-        top_concern = drug_data['primary_safety_concern']
-        insights.append(f"⚠️ Safety signals detected ({drug_data['negative_studies_(%)']:.0f}% negative studies) - address '{top_concern}' proactively in communications")
+        insights.append(f" Safety signals detected ({drug_data['negative_studies_(%)']:.0f}% negative studies) - proactive communication required")
     elif drug_data['negative_studies_(%)'] < 15:
-        insights.append(f"✅ Favorable safety profile ({drug_data['negative_studies_(%)']:.0f}% negative studies) - emphasize in competitive positioning")
+        insights.append(f" Favorable safety profile ({drug_data['negative_studies_(%)']:.0f}% negative studies) - emphasize in positioning")
     
     if drug_data['recent_pub_share'] > 0.4:
-        insights.append(f"📈 High research momentum ({drug_data['recent_pub_share']:.0%} recent publications) - emerging interest in the market")
-    elif drug_data['recent_pub_share'] < 0.2:
-        insights.append(f"📉 Declining research activity ({drug_data['recent_pub_share']:.0%} recent publications) - may indicate waning clinical interest")
-    
-    if "⚠️" in drug_data['perception_gap']:
-        insights.append(f"🎯 {drug_data['perception_gap'].replace('⚠️ ', '')} - investigate root causes")
+        insights.append(f"📈 High research momentum ({drug_data['recent_pub_share']:.0%} recent publications) - emerging interest")
+    elif drug_data['recent_pub_share'] < 0.2 and drug_data['total_articles'] > 10:
+        insights.append(f"📉 Declining research activity ({drug_data['recent_pub_share']:.0%} recent publications) - waning clinical interest")
     
     return "\n\n".join([f"{i+1}. {insight}" for i, insight in enumerate(insights[:5])])
 
 # =========================
-# APP SETUP
+# APP SETUP & STYLES
 # =========================
 
 app = dash.Dash(__name__, suppress_callback_exceptions=True)
+
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Archivo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Archivo', -apple-system, sans-serif;
+                background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                min-height: 100vh;
+            }
+            
+            .container {
+                max-width: 1600px;
+                margin: 0 auto;
+                padding: 40px 20px;
+            }
+            
+            .header {
+                text-align: center;
+                margin-bottom: 50px;
+                animation: fadeInDown 0.8s ease;
+            }
+            
+            .header h1 {
+                font-size: 3.5em;
+                font-weight: 900;
+                background: linear-gradient(135deg, #0066FF, #00D4AA);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin-bottom: 10px;
+                font-family: 'Archivo', sans-serif;
+                letter-spacing: -2px;
+            }
+            
+            .header p {
+                font-size: 1.3em;
+                color: #1a1a1a;
+                font-weight: 600;
+                font-family: 'Space Mono', monospace;
+            }
+            
+            .tabs {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 40px;
+                background: white;
+                padding: 8px;
+                border-radius: 16px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+                animation: fadeIn 1s ease;
+            }
+            
+            .tabs .tab {
+                flex: 1;
+                padding: 16px 24px;
+                background: transparent;
+                border: none;
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: 700;
+                font-family: 'Archivo', sans-serif;
+                color: #666;
+                cursor: pointer;
+                transition: all 0.3s ease;
+            }
+            
+            .tabs .tab--selected {
+                background: linear-gradient(135deg, #0066FF, #00D4AA);
+                color: white;
+                box-shadow: 0 4px 16px rgba(0, 102, 255, 0.3);
+            }
+            
+            .dropdown {
+                margin-bottom: 40px;
+                animation: fadeIn 1.2s ease;
+            }
+            
+            .Select-control {
+                border: 3px solid #e0e0e0 !important;
+                border-radius: 16px !important;
+                padding: 8px !important;
+                font-size: 18px !important;
+                font-family: 'Archivo', sans-serif !important;
+                font-weight: 700 !important;
+                transition: all 0.3s ease !important;
+            }
+            
+            .Select-control:hover {
+                border-color: #0066FF !important;
+                box-shadow: 0 4px 20px rgba(0, 102, 255, 0.15) !important;
+            }
+            
+            .is-focused .Select-control {
+                border-color: #0066FF !important;
+                box-shadow: 0 4px 20px rgba(0, 102, 255, 0.2) !important;
+            }
+            
+            .card {
+                background: white;
+                border-radius: 20px;
+                padding: 30px;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+                border: 3px solid transparent;
+                transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                position: relative;
+                overflow: hidden;
+            }
+            
+            .card::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 4px;
+                background: linear-gradient(90deg, #0066FF, #00D4AA);
+                transform: scaleX(0);
+                transform-origin: left;
+                transition: transform 0.4s ease;
+            }
+            
+            .card:hover::before {
+                transform: scaleX(1);
+            }
+            
+            .card:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12);
+                border-color: rgba(0, 102, 255, 0.2);
+            }
+            
+            .risk-high {
+                border-color: #FF3366 !important;
+                background: linear-gradient(135deg, #fff5f7, #ffffff);
+            }
+            
+            .risk-moderate {
+                border-color: #FFB020 !important;
+                background: linear-gradient(135deg, #fffbf0, #ffffff);
+            }
+            
+            .risk-low {
+                border-color: #00D4AA !important;
+                background: linear-gradient(135deg, #f0fff9, #ffffff);
+            }
+            
+            .alert {
+                padding: 24px;
+                border-radius: 16px;
+                margin-bottom: 30px;
+                border-left: 6px solid;
+                font-weight: 600;
+                animation: slideInLeft 0.6s ease;
+            }
+            
+            .alert-critical {
+                background: linear-gradient(135deg, #FFE5ED, #FFF0F5);
+                border-left-color: #FF3366;
+                color: #8B1538;
+            }
+            
+            .alert-warning {
+                background: linear-gradient(135deg, #FFF5E5, #FFFBF0);
+                border-left-color: #FFB020;
+                color: #8B5A00;
+            }
+            
+            .alert-info {
+                background: linear-gradient(135deg, #E5F5FF, #F0F9FF);
+                border-left-color: #0066FF;
+                color: #003D99;
+            }
+            
+            .comment-box {
+                background: white;
+                border-radius: 16px;
+                padding: 24px;
+                border: 3px solid;
+                margin-bottom: 20px;
+                position: relative;
+                animation: fadeInUp 0.8s ease;
+            }
+            
+            .comment-box::before {
+                content: '';
+                position: absolute;
+                top: -3px;
+                left: -3px;
+                right: -3px;
+                bottom: -3px;
+                background: linear-gradient(135deg, currentColor, transparent);
+                border-radius: 16px;
+                z-index: -1;
+                opacity: 0.1;
+            }
+            
+            .comment-positive {
+                border-color: #00D4AA;
+            }
+            
+            .comment-negative {
+                border-color: #FF3366;
+            }
+            
+            .comment-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+            }
+            
+            .comment-label {
+                font-size: 1.1em;
+                font-weight: 900;
+                font-family: 'Space Mono', monospace;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+            }
+            
+            .comment-text {
+                color: #1a1a1a;
+                line-height: 1.8;
+                font-size: 1.05em;
+                font-style: italic;
+                padding: 16px;
+                background: rgba(0, 0, 0, 0.02);
+                border-radius: 12px;
+                border-left: 4px solid currentColor;
+            }
+            
+            .grid-2 {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 24px;
+                margin-bottom: 30px;
+            }
+            
+            .grid-3 {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 24px;
+                margin-bottom: 30px;
+            }
+            
+            .grid-4 {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 20px;
+                margin-bottom: 30px;
+            }
+            
+            .metric-card {
+                background: white;
+                border-radius: 16px;
+                padding: 24px;
+                border: 3px solid #e0e0e0;
+                text-align: center;
+                transition: all 0.3s ease;
+            }
+            
+            .metric-card:hover {
+                transform: translateY(-4px);
+                border-color: #0066FF;
+                box-shadow: 0 8px 24px rgba(0, 102, 255, 0.15);
+            }
+            
+            .metric-label {
+                font-size: 0.85em;
+                color: #666;
+                font-weight: 700;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-bottom: 8px;
+                font-family: 'Space Mono', monospace;
+            }
+            
+            .metric-value {
+                font-size: 2.5em;
+                font-weight: 900;
+                color: #1a1a1a;
+                font-family: 'Space Mono', monospace;
+            }
+            
+            .metric-value-small {
+                font-size: 1.4em;
+            }
+            
+            .insights-box {
+                background: linear-gradient(135deg, #F0F8FF, #E5F5FF);
+                border: 3px solid #0066FF;
+                border-radius: 20px;
+                padding: 32px;
+                animation: fadeIn 1.4s ease;
+            }
+            
+            .insights-title {
+                font-size: 1.8em;
+                font-weight: 900;
+                margin-bottom: 24px;
+                color: #1a1a1a;
+                font-family: 'Archivo', sans-serif;
+            }
+            
+            .insight-item {
+                background: white;
+                padding: 20px;
+                border-radius: 12px;
+                margin-bottom: 16px;
+                border-left: 5px solid #0066FF;
+                font-size: 1.05em;
+                line-height: 1.7;
+                font-weight: 600;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+                transition: all 0.3s ease;
+            }
+            
+            .insight-item:hover {
+                transform: translateX(8px);
+                box-shadow: 0 6px 20px rgba(0, 102, 255, 0.15);
+            }
+            
+            .section-title {
+                font-size: 1.8em;
+                font-weight: 900;
+                margin-bottom: 24px;
+                color: #1a1a1a;
+                font-family: 'Archivo', sans-serif;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            
+            .empty-state {
+                text-align: center;
+                padding: 100px 20px;
+                font-size: 1.4em;
+                color: #666;
+                font-weight: 700;
+            }
+            
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            
+            @keyframes fadeInDown {
+                from {
+                    opacity: 0;
+                    transform: translateY(-30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            
+            @keyframes fadeInUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            
+            @keyframes slideInLeft {
+                from {
+                    opacity: 0;
+                    transform: translateX(-30px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateX(0);
+                }
+            }
+            
+            @media (max-width: 968px) {
+                .grid-2, .grid-3, .grid-4 {
+                    grid-template-columns: 1fr;
+                }
+                
+                .header h1 {
+                    font-size: 2.5em;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # =========================
 # LAYOUT
@@ -321,20 +764,20 @@ app = dash.Dash(__name__, suppress_callback_exceptions=True)
 app.layout = html.Div(className="container", children=[
     
     html.Div(className="header", children=[
-        html.H1("🧬 Pharma Market Perception Intelligence"),
-        html.P("AI-powered insights from 4000+ drugs across clinical literature and patient reviews"),
+        html.H1(" Pharma Perception Intel"),
+        html.P("NLP-Powered Market Intelligence from 4000+ Drugs"),
     ]),
 
     dcc.Tabs(id="mode-tabs", value='single', className="tabs", children=[
-        dcc.Tab(label='📊 Single Drug Analysis', value='single'),
-        dcc.Tab(label='⚖️ Comparative Analysis', value='compare'),
+        dcc.Tab(label=' Drug Analysis', value='single'),
+        dcc.Tab(label=' Comparison', value='compare'),
     ]),
 
     html.Div(id="mode-content")
 ])
 
 # =========================
-# MODE SWITCHING
+# CALLBACKS
 # =========================
 
 @app.callback(
@@ -343,40 +786,34 @@ app.layout = html.Div(className="container", children=[
 )
 def render_mode(tab):
     if tab == 'single':
-        return html.Div(className="single-mode", children=[
+        return html.Div([
             dcc.Dropdown(
                 id="drug-dropdown",
                 options=[{"label": d, "value": d} for d in sorted(df["drug_name"].unique())],
-                placeholder="Select a drug...",
+                placeholder="Select a drug to analyze...",
                 clearable=False,
                 className="dropdown"
             ),
             html.Div(id="single-drug-output")
         ])
     else:
-        return html.Div(className="compare-mode", children=[
-            html.Div(className="compare-dropdowns", children=[
+        return html.Div([
+            html.Div(className="grid-2", children=[
                 dcc.Dropdown(
                     id="drug1-dropdown",
                     options=[{"label": d, "value": d} for d in sorted(df["drug_name"].unique())],
                     placeholder="Select first drug...",
-                    clearable=False,
-                    className="dropdown"
+                    clearable=False
                 ),
                 dcc.Dropdown(
                     id="drug2-dropdown",
                     options=[{"label": d, "value": d} for d in sorted(df["drug_name"].unique())],
                     placeholder="Select second drug...",
-                    clearable=False,
-                    className="dropdown"
+                    clearable=False
                 ),
             ]),
             html.Div(id="comparison-output")
         ])
-
-# =========================
-# SINGLE DRUG ANALYSIS
-# =========================
 
 @app.callback(
     Output("single-drug-output", "children"),
@@ -384,10 +821,7 @@ def render_mode(tab):
 )
 def update_single_drug(drug):
     if not drug:
-        return html.Div(
-            "👆 Select a drug to view comprehensive analysis",
-            className="empty-state"
-        )
+        return html.Div(" Select a drug to view comprehensive analysis", className="empty-state")
 
     r = df[df["drug_name"] == drug].iloc[0]
     
@@ -396,111 +830,117 @@ def update_single_drug(drug):
     sentiment = str(r["overall_sentiment"]).title()
     
     side_effects_list = r["side_effects_list"]
-    top_5_effects = ", ".join(side_effects_list[:5]) if side_effects_list else "Not prominently reported"
+    top_5_effects = ", ".join(side_effects_list[:5]) if side_effects_list else "Not reported"
     
-    # Generate visualizations
+    # Visualizations
     gauge_fig = create_sentiment_gauge(r["avg_rating"])
     side_effects_fig = create_side_effects_chart(side_effects_list)
-    wordcloud_img = create_wordcloud(side_effects_list)
+    wordcloud_img = create_wordcloud_from_effects(side_effects_list)
     
-    # Strategic insights
     strategic_insights = generate_strategic_insights(r)
     
     # Determine risk class
-    risk_class = "alert-highrisk" if "High" in r["risk_label"] else \
-                 "alert-moderate" if "Moderate" in r["risk_label"] else "alert-low"
-    
-    # Determine perception class
-    perception_class = "alert-warning" if "⚠️" in r["perception_gap"] else "alert-info"
+    risk_class = "risk-high" if "High" in r["risk_label"] else \
+                 "risk-moderate" if "Moderate" in r["risk_label"] else "risk-low"
     
     return html.Div(children=[
         
-        # Header Card
-        html.Div(className=f"card {risk_class}", children=[
-            html.H2(drug),
-            html.Div(f"{r['risk_label']} - Risk Score: {r['risk_score']}/10")
-        ]),
-        
-        # Perception Gap Alert
-        html.Div(className=f"card {perception_class}", children=[
-            html.H4("🔍 Perception Analysis"),
-            html.P(r["perception_gap"])
-        ]) if "⚠️" in r["perception_gap"] or "✅" in r["perception_gap"] else None,
-        
-        # Key Metrics Grid
-        html.Div(className="grid grid-auto-fit", children=[
-            html.Div(className="card", children=[
-                html.Div("📚 Total Studies", className="label"),
-                html.Div(f"{int(r['total_articles'])}", className="value")
-            ]),
-            
-            html.Div(className="card", children=[
-                html.Div("✅ Evidence Quality", className="label"),
-                html.Div(f"{r['high_quality_evidence_(%)']:.1f}%", className="value")
-            ]),
-            
-            html.Div(className="card", children=[
-                html.Div("📊 Study Sentiment", className="label"),
-                html.Div(
-                    f"{r['positive_studies_(%)']:.0f}% pos / {r['negative_studies_(%)']:.0f}% neg",
-                    className="value value-small"
-                )
-            ]),
-            
-            html.Div(className="card", children=[
-                html.Div("🤝 Consensus", className="label"),
-                html.Div(r['consensus_label'], className="value value-small")
-            ]),
-            
-            html.Div(className="card", children=[
-                html.Div("🔬 Research Freshness", className="label"),
-                html.Div(f"{r['recent_pub_share']:.1%}", className="value")
-            ]),
-            
-            html.Div(className="card", children=[
-                html.Div("💬 Patient Sentiment", className="label"),
-                html.Div(sentiment, className="value")
-            ]),
-        ]),
-        
-        # Gauge + Safety Info
-        html.Div(className="grid grid-2-3", children=[
-            html.Div(className="card", children=[
-                dcc.Graph(figure=gauge_fig, config={'displayModeBar': False})
-            ]),
-            
-            html.Div(className="card", children=[
-                html.H4("⚠️ Primary Safety Concern"),
-                html.P(r["primary_safety_concern"], className="safety-text"),
-                html.Hr(),
-                html.Div("🩺 Top Reported Side Effects", className="label"),
-                html.P(top_5_effects, className="side-effects-text")
+        # Drug Header
+        html.Div(className=f"card {risk_class}", style={'marginBottom': '30px'}, children=[
+            html.Div(style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'center'}, children=[
+                html.Div(children=[
+                    html.H2(drug, style={'fontSize': '2.5em', 'marginBottom': '12px', 'fontWeight': '900'}),
+                    html.Div(r["risk_label"], style={
+                        'fontSize': '1.2em',
+                        'fontWeight': '900',
+                        'fontFamily': 'Space Mono, monospace'
+                    })
+                ]),
+                html.Div(children=[
+                    html.Div("Overall Sentiment", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700', 'textTransform': 'uppercase'}),
+                    html.Div(sentiment, style={
+                        'fontSize': '2em',
+                        'fontWeight': '900',
+                        'color': '#00D4AA' if sentiment == 'Positive' else '#FF3366' if sentiment == 'Negative' else '#FFB020'
+                    })
+                ])
             ])
         ]),
         
-        # Side Effects Visualizations
-        html.Div(className="grid grid-2", children=[
+        # Best & Worst Comments
+        html.Div(className="section-title", children=["", "Patient Voice Highlights"]),
+        html.Div(className="grid-2", children=[
+            html.Div(className="comment-box comment-positive", children=[
+                html.Div(className="comment-header", children=[
+                    html.Div(" Most Positive", className="comment-label", style={'color': '#00D4AA'}),
+                ]),
+                html.Div(r["most_positive_comment"], className="comment-text", style={'color': '#00D4AA'})
+            ]),
+            
+            html.Div(className="comment-box comment-negative", children=[
+                html.Div(className="comment-header", children=[
+                    html.Div(" Most Negative", className="comment-label", style={'color': '#FF3366'}),
+                ]),
+                html.Div(r["most_negative_comment"], className="comment-text", style={'color': '#FF3366'})
+            ])
+        ]),
+        
+        # Key Metrics
+        html.Div(className="section-title", children=["", "Clinical Literature Metrics"]),
+        html.Div(className="grid-4", children=[
+            html.Div(className="metric-card", children=[
+                html.Div(" Total Studies", className="metric-label"),
+                html.Div(f"{int(r['total_articles'])}", className="metric-value")
+            ]),
+            html.Div(className="metric-card", children=[
+                html.Div(" Evidence Quality", className="metric-label"),
+                html.Div(f"{r['high_quality_evidence_(%)']:.1f}%", className="metric-value")
+            ]),
+            html.Div(className="metric-card", children=[
+                html.Div(" Positive Studies", className="metric-label"),
+                html.Div(f"{r['positive_studies_(%)']:.0f}%", className="metric-value", style={'color': '#00D4AA'})
+            ]),
+            html.Div(className="metric-card", children=[
+                html.Div(" Negative Studies", className="metric-label"),
+                html.Div(f"{r['negative_studies_(%)']:.0f}%", className="metric-value", style={'color': '#FF3366'})
+            ]),
+        ]),
+        
+        # Visualizations
+        html.Div(className="section-title", children=["", "Visual Analytics"]),
+        html.Div(className="grid-2", children=[
+            html.Div(className="card", children=[
+                dcc.Graph(figure=gauge_fig, config={'displayModeBar': False})
+            ]),
+            html.Div(className="card", children=[
+                html.Div(" Primary Safety Concern", style={'fontSize': '1.3em', 'fontWeight': '700', 'marginBottom': '16px'}),
+                html.P(r["primary_safety_concern"], style={'fontSize': '1.1em', 'lineHeight': '1.6', 'marginBottom': '20px'}),
+                html.Hr(style={'margin': '20px 0', 'border': 'none', 'borderTop': '2px solid #e0e0e0'}),
+                html.Div("🩺 Top Reported Side Effects", style={'fontSize': '1.1em', 'fontWeight': '700', 'marginBottom': '12px'}),
+                html.P(top_5_effects, style={'fontSize': '1.05em', 'color': '#666', 'lineHeight': '1.6'})
+            ])
+        ]),
+        
+        html.Div(className="grid-2", children=[
             html.Div(className="card", children=[
                 dcc.Graph(figure=side_effects_fig, config={'displayModeBar': False})
             ]),
-            
             html.Div(className="card", children=[
-                html.H4("☁️ Side Effects Word Cloud"),
-                html.Img(src=wordcloud_img, className="wordcloud-img") if wordcloud_img else 
-                html.P("No side effects data available", className="no-data")
+                html.Div(" Side Effects Word Cloud", style={'fontSize': '1.3em', 'fontWeight': '700', 'marginBottom': '16px'}),
+                html.Img(src=wordcloud_img, style={'width': '100%', 'borderRadius': '12px'}) if wordcloud_img else 
+                html.P("No side effects data available", style={'textAlign': 'center', 'color': '#999', 'padding': '60px 20px', 'fontSize': '1.1em'})
             ])
         ]),
         
         # Strategic Insights
-        html.Div(className="card insights-card", children=[
-            html.H4("🎯 Strategic Insights"),
-            html.Pre(strategic_insights, className="insights-text")
+        html.Div(className="insights-box", children=[
+            html.Div(" AI-Powered Strategic Insights", className="insights-title"),
+            html.Div([
+                html.Div(insight, className="insight-item")
+                for insight in strategic_insights.split('\n\n')
+            ])
         ])
     ])
-
-# =========================
-# COMPARATIVE ANALYSIS
-# =========================
 
 @app.callback(
     Output("comparison-output", "children"),
@@ -509,113 +949,90 @@ def update_single_drug(drug):
 )
 def update_comparison(drug1, drug2):
     if not drug1 or not drug2:
-        return html.Div(
-            "👆 Select two drugs to compare",
-            className="empty-state"
-        )
+        return html.Div(" Select two drugs to compare", className="empty-state")
     
     if drug1 == drug2:
-        return html.Div(
-            "⚠️ Please select two different drugs",
-            className="error-state"
-        )
+        return html.Div(" Please select two different drugs", className="empty-state")
     
     d1 = df[df["drug_name"] == drug1].iloc[0]
     d2 = df[df["drug_name"] == drug2].iloc[0]
     
-    # Create comparison radar chart
     comparison_fig = create_comparison_chart(d1, d2, drug1, drug2)
     
     return html.Div(children=[
         
-        # Radar Chart
-        html.Div(className="card", children=[
-            html.H3(f"{drug1} vs {drug2}", className="comparison-title"),
+        html.Div(className="card", style={'marginBottom': '30px'}, children=[
+            html.H3(f"{drug1} vs {drug2}", style={'textAlign': 'center', 'fontSize': '2.2em', 'fontWeight': '900', 'marginBottom': '30px'}),
             dcc.Graph(figure=comparison_fig, config={'displayModeBar': False})
         ]),
         
-        # Side-by-side comparison
-        html.Div(className="grid grid-2", children=[
+        html.Div(className="grid-2", children=[
             
             # Drug 1
-            html.Div(className="card comparison-card", children=[
-                html.H4(drug1, className="drug-title drug1-title"),
+            html.Div(className="card", style={'borderColor': '#0066FF'}, children=[
+                html.H4(drug1, style={'fontSize': '1.8em', 'fontWeight': '900', 'marginBottom': '24px', 'color': '#0066FF'}),
                 
-                html.Div(className="metric-row", children=[
-                    html.Div("Patient Rating", className="label"),
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Patient Rating", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
                     html.Div(f"{d1['avg_rating']:.2f}/5" if pd.notna(d1['avg_rating']) else "N/A", 
-                            className="value")
+                            style={'fontSize': '2em', 'fontWeight': '900', 'fontFamily': 'Space Mono, monospace'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Risk Level", className="label"),
-                    html.Div(d1['risk_label'], className="value value-small")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Overall Sentiment", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(d1['overall_sentiment'].title(), 
+                            style={'fontSize': '1.5em', 'fontWeight': '900', 
+                                  'color': '#00D4AA' if d1['overall_sentiment'] == 'positive' else '#FF3366' if d1['overall_sentiment'] == 'negative' else '#FFB020'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Evidence Quality", className="label"),
-                    html.Div(f"{d1['high_quality_evidence_(%)']:.1f}%", className="value")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Risk Level", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(d1['risk_label'], style={'fontSize': '1.2em', 'fontWeight': '900'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Study Sentiment", className="label"),
-                    html.Div(f"{d1['positive_studies_(%)']:.0f}% positive", className="value")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Evidence Quality", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(f"{d1['high_quality_evidence_(%)']:.1f}%", style={'fontSize': '2em', 'fontWeight': '900', 'fontFamily': 'Space Mono, monospace'})
                 ]),
-                
-                html.Hr(),
-                html.Div("Top Side Effects", className="label section-label"),
-                html.Ul([html.Li(e) for e in d1['side_effects_list'][:5]], 
-                       className="side-effects-list")
             ]),
             
             # Drug 2
-            html.Div(className="card comparison-card", children=[
-                html.H4(drug2, className="drug-title drug2-title"),
+            html.Div(className="card", style={'borderColor': '#FF3366'}, children=[
+                html.H4(drug2, style={'fontSize': '1.8em', 'fontWeight': '900', 'marginBottom': '24px', 'color': '#FF3366'}),
                 
-                html.Div(className="metric-row", children=[
-                    html.Div("Patient Rating", className="label"),
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Patient Rating", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
                     html.Div(f"{d2['avg_rating']:.2f}/5" if pd.notna(d2['avg_rating']) else "N/A", 
-                            className="value")
+                            style={'fontSize': '2em', 'fontWeight': '900', 'fontFamily': 'Space Mono, monospace'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Risk Level", className="label"),
-                    html.Div(d2['risk_label'], className="value value-small")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Overall Sentiment", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(d2['overall_sentiment'].title(), 
+                            style={'fontSize': '1.5em', 'fontWeight': '900',
+                                  'color': '#00D4AA' if d2['overall_sentiment'] == 'positive' else '#FF3366' if d2['overall_sentiment'] == 'negative' else '#FFB020'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Evidence Quality", className="label"),
-                    html.Div(f"{d2['high_quality_evidence_(%)']:.1f}%", className="value")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Risk Level", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(d2['risk_label'], style={'fontSize': '1.2em', 'fontWeight': '900'})
                 ]),
-                
-                html.Div(className="metric-row", children=[
-                    html.Div("Study Sentiment", className="label"),
-                    html.Div(f"{d2['positive_studies_(%)']:.0f}% positive", className="value")
+                html.Div(style={'marginBottom': '16px', 'paddingBottom': '16px', 'borderBottom': '2px solid #f0f0f0'}, children=[
+                    html.Div("Evidence Quality", style={'fontSize': '0.9em', 'color': '#666', 'marginBottom': '8px', 'fontWeight': '700'}),
+                    html.Div(f"{d2['high_quality_evidence_(%)']:.1f}%", style={'fontSize': '2em', 'fontWeight': '900', 'fontFamily': 'Space Mono, monospace'})
                 ]),
-                
-                html.Hr(),
-                html.Div("Top Side Effects", className="label section-label"),
-                html.Ul([html.Li(e) for e in d2['side_effects_list'][:5]], 
-                       className="side-effects-list")
             ])
         ]),
         
-        # Key Differences
-        html.Div(className="card differences-card", children=[
-            html.H4("📌 Key Differences"),
+        html.Div(className="card", style={'marginTop': '30px', 'background': 'linear-gradient(135deg, #FFFBF0, #FFF)'}, children=[
+            html.Div(" Key Differences", style={'fontSize': '1.6em', 'fontWeight': '900', 'marginBottom': '20px'}),
             html.Ul([
-                html.Li(f"Evidence Quality: {drug1} ({d1['high_quality_evidence_(%)']:.1f}%) vs {drug2} ({d2['high_quality_evidence_(%)']:.1f}%)"),
-                html.Li(f"Patient Satisfaction: {drug1} ({d1['avg_rating']:.2f}/5) vs {drug2} ({d2['avg_rating']:.2f}/5)"),
-                html.Li(f"Safety Profile: {drug1} is {d1['risk_label']} vs {drug2} is {d2['risk_label']}"),
-                html.Li(f"Consensus: {drug1} has {d1['consensus_label'].lower()} vs {drug2} has {d2['consensus_label'].lower()}")
-            ], className="differences-list")
+                html.Li(f"Patient Satisfaction: {drug1} ({d1['avg_rating']:.2f}/5) vs {drug2} ({d2['avg_rating']:.2f}/5)", 
+                       style={'padding': '12px 0', 'fontSize': '1.1em', 'fontWeight': '600'}),
+                html.Li(f"Sentiment: {drug1} ({d1['overall_sentiment']}) vs {drug2} ({d2['overall_sentiment']})", 
+                       style={'padding': '12px 0', 'fontSize': '1.1em', 'fontWeight': '600'}),
+                html.Li(f"Evidence Quality: {drug1} ({d1['high_quality_evidence_(%)']:.1f}%) vs {drug2} ({d2['high_quality_evidence_(%)']:.1f}%)", 
+                       style={'padding': '12px 0', 'fontSize': '1.1em', 'fontWeight': '600'}),
+                html.Li(f"Safety Profile: {drug1} is {d1['risk_label']} vs {drug2} is {d2['risk_label']}", 
+                       style={'padding': '12px 0', 'fontSize': '1.1em', 'fontWeight': '600'}),
+            ], style={'listStyle': 'none', 'padding': '0'})
         ])
     ])
 
-# =========================
-# RUN
-# =========================
-
-
 if __name__ == "__main__":
-    app.run(port=8055, debug=True)
+    app.run(port=8056, debug=True)
